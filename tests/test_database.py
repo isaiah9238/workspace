@@ -224,6 +224,27 @@ class TestDatabaseMigrator(unittest.TestCase):
         self.assertEqual(tool["parameters_json"], schema)
         self.assertEqual(tool["usage_examples"], examples)
 
+    def test_seed_default_tools(self):
+        """Verifies that seed_default_tools populates core workspace tools in the database."""
+        self.migrator.run_migrations()
+        from db.seeder import seed_default_tools
+        from db.tools_repo import list_tools_by_category
+
+        seed_default_tools(self.conn)
+
+        workspace_tools = list_tools_by_category(self.conn, "workspace")
+        tool_names = {t["name"] for t in workspace_tools}
+
+        core_tools = {"read_file", "write_file", "run_command", "list_files", "patch_file"}
+        self.assertTrue(core_tools.issubset(tool_names))
+
+        for tool in workspace_tools:
+            if tool["name"] in core_tools:
+                self.assertEqual(tool["category"], "workspace")
+                self.assertIsNotNone(tool["description"])
+                self.assertTrue(len(tool["description"]) > 0)
+                self.assertIsNotNone(tool["parameters_json"])
+
 
 if __name__ == "__main__":
     unittest.main()
