@@ -105,3 +105,58 @@ class Agent:
             result = self.execute_tool(call)
             results.append(result)
         return results
+
+from google import genai
+from google.genai import types
+
+
+def run_agent():
+    print("--- Initializing Agent Database and Registry ---")
+    agent = Agent("app.db")
+    client = genai.Client()
+
+    tools_list = [read_file, write_file, patch_file, run_command, list_files]
+    chat = client.chats.create(
+        model="gemini-3.6-flash",
+        config=types.GenerateContentConfig(
+            tools=tools_list,
+            temperature=0.2,
+        ),
+    )
+
+    print("--- CodeAgent CLI Ready (type 'exit' or 'quit' to stop) ---")
+    while True:
+        try:
+            user_input = input("\nUser > ").strip()
+            if not user_input:
+                continue
+            if user_input.lower() in ("exit", "quit"):
+                print("Exiting...")
+                break
+
+            response = chat.send_message(user_input)
+
+            while response.function_calls:
+                for call in response.function_calls:
+                    print(f"[*] Tool Call: {call.name}({call.args})")
+                    fc = FunctionCall(name=call.name, args=dict(call.args))
+                    output = agent.execute_tool(fc)
+                    response = chat.send_message(
+                        types.Part.from_function_response(
+                            name=call.name,
+                            response={"result": str(output)},
+                        )
+                    )
+
+            if response.text:
+                print(f"\nAgent > {response.text}")
+
+        except (KeyboardInterrupt, EOFError):
+            print("\nExiting...")
+            break
+        except Exception as e:
+            print(f"[!] Error: {e}")
+
+
+if __name__ == "__main__":
+    run_agent()
