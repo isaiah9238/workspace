@@ -38,6 +38,7 @@ class TestDatabaseMigrator(unittest.TestCase):
         self.assertIn("001", applied)
         self.assertIn("002", applied)
         self.assertIn("003", applied)
+        self.assertIn("004", applied)
 
         cursor = self.conn.cursor()
         cursor.execute(
@@ -55,17 +56,20 @@ class TestDatabaseMigrator(unittest.TestCase):
         cursor.execute("PRAGMA table_info(tools);")
         columns = [row[1] for row in cursor.fetchall()]
         self.assertIn("parameters_json", columns)
+        self.assertIn("category", columns)
+        self.assertIn("usage_examples", columns)
+        self.assertIn("target_type", columns)
 
     def test_idempotent_migrations(self):
         """Verifies that running migrations a second time does not re-execute already applied versions."""
         first_run = self.migrator.run_migrations()
-        self.assertEqual(len(first_run), 3)
+        self.assertEqual(len(first_run), 4)
 
         second_run = self.migrator.run_migrations()
         self.assertEqual(len(second_run), 0)
 
         applied = self.migrator.get_applied_migrations()
-        self.assertEqual(len(applied), 3)
+        self.assertEqual(len(applied), 4)
 
     def test_upsert_tool(self):
         """Tests inserting and updating a tool record using upsert_tool."""
@@ -160,6 +164,65 @@ class TestDatabaseMigrator(unittest.TestCase):
         )
         self.assertIn("user_id", stored_schema["required"])
         self.assertNotIn("include_profile", stored_schema["required"])
+
+    def test_filter_tools_by_category(self):
+        """Verifies upserting tools with categories and querying them by category."""
+        self.migrator.run_migrations()
+        from db.tools_repo import upsert_tool, list_tools_by_category
+
+        schema = {"type": "object", "properties": {}}
+        upsert_tool(
+            self.conn,
+            name="file_read",
+            description="Reads a file",
+            schema=schema,
+            category="workspace",
+            usage_examples="file_read(path='test.txt')",
+        )
+        upsert_tool(
+            self.conn,
+            name="http_request",
+            description="Makes HTTP call",
+            schema=schema,
+            category="api",
+            target_type="http_endpoint",
+        )
+
+        workspace_tools = list_tools_by_category(self.conn, "workspace")
+        self.assertEqual(len(workspace_tools), 1)
+        self.assertEqual(workspace_tools[0]["name"], "file_read")
+        self.assertEqual(workspace_tools[0]["usage_examples"], "file_read(path='test.txt')")
+
+        api_tools = list_tools_by_category(self.conn, "api")
+        self.assertEqual(len(api_tools), 1)
+        self.assertEqual(api_tools[0]["name"], "http_request")
+        self.assertEqual(api_tools[0]["target_type"], "http_endpoint")
+
+    def test_tool_usage_examples(self):
+        """Verifies upserting a tool with structured usage_examples and deserializing via get_tool."""
+        self.migrator.run_migrations()
+        from db.tools_repo import upsert_tool, get_tool
+
+        schema = {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        }
+        examples = [{"input": {"path": "test.txt"}, "description": "Read file"}]
+
+        upsert_tool(
+            self.conn,
+            name="read_file",
+            description="Reads file contents",
+            schema=schema,
+            usage_examples=examples,
+        )
+
+        tool = get_tool(self.conn, "read_file")
+        self.assertIsNotNone(tool)
+        self.assertEqual(tool["name"], "read_file")
+        self.assertEqual(tool["parameters_json"], schema)
+        self.assertEqual(tool["usage_examples"], examples)
 
 
 if __name__ == "__main__":
