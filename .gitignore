@@ -21,6 +21,7 @@ __pycache__/
 htmlcov/
 
 # Editor & OS Files
+*.db
 .vscode/
 .idea/
 .DS_Store
