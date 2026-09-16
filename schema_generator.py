@@ -1,6 +1,8 @@
+import ast
 import inspect
 import re
-from typing import Dict, List, get_args, get_origin, get_type_hints
+import types
+from typing import Dict, List, Union, get_args, get_origin, get_type_hints
 
 TYPE_MAP = {
     str: "string",
@@ -61,6 +63,10 @@ def resolve_type(param_type):
     origin = get_origin(param_type)
     args = get_args(param_type)
 
+    if origin is Union or (hasattr(types, "UnionType") and origin is types.UnionType):
+        any_of = [resolve_type(arg) for arg in args]
+        return {"anyOf": any_of}
+
     if origin is None:
         if param_type in TYPE_MAP:
             return {"type": TYPE_MAP[param_type]}
@@ -76,6 +82,51 @@ def resolve_type(param_type):
         return {"type": "object"}
 
     return {"type": "object"}
+
+
+def ast_annotation_to_schema(node):
+    """Converts an AST type annotation node to a JSON schema type definition."""
+    if node is None:
+        return {"type": "string"}
+
+    type_map = {
+        "str": "string",
+        "int": "integer",
+        "float": "number",
+        "bool": "boolean",
+        "dict": "object",
+        "Dict": "object",
+        "list": "array",
+        "List": "array",
+    }
+
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        def flatten_bitor(bnode):
+            if isinstance(bnode, ast.BinOp) and isinstance(bnode.op, ast.BitOr):
+                return flatten_bitor(bnode.left) + flatten_bitor(bnode.right)
+            return [bnode]
+
+        branches = flatten_bitor(node)
+        return {"anyOf": [ast_annotation_to_schema(b) for b in branches]}
+
+    if isinstance(node, ast.Name):
+        return {"type": type_map.get(node.id, "string")}
+
+    if isinstance(node, ast.Subscript):
+        base_id = node.value.id if isinstance(node.value, ast.Name) else ""
+        if base_id in ("List", "list"):
+            slice_node = node.slice
+            if isinstance(slice_node, ast.Index):
+                slice_node = slice_node.value
+            item_schema = ast_annotation_to_schema(slice_node)
+            return {"type": "array", "items": item_schema}
+        elif base_id in ("Dict", "dict"):
+            return {"type": "object"}
+
+    if isinstance(node, ast.Constant):
+        return {"type": type_map.get(str(node.value), "string")}
+
+    return {"type": "string"}
 
 
 def generate_schema(func):
@@ -107,7 +158,68 @@ def generate_schema(func):
             required.append(name)
 
     return {
+        "name": func.__name__,
         "type": "object",
         "properties": properties,
         "required": required,
     }
+
+
+class ToolSchemaGenerator:
+    """Generator class for creating JSON schemas from callables or source code strings."""
+
+    @classmethod
+    def generate(cls, func):
+        return generate_schema(func)
+
+    @classmethod
+    def generate_from_source(cls, code_string: str) -> dict:
+        tree = ast.parse(code_string)
+        func_node = None
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                func_node = node
+                break
+
+        if not func_node:
+            raise ValueError("No function definition found in source code.")
+
+        docstring = ast.get_docstring(func_node)
+        param_docs = parse_param_docs(docstring)
+
+        args = func_node.args
+        num_args = len(args.args)
+        num_defaults = len(args.defaults)
+        num_req = num_args - num_defaults
+
+        properties = {}
+        required = []
+
+        for idx, arg in enumerate(args.args):
+            pname = arg.arg
+            pschema = ast_annotation_to_schema(arg.annotation)
+            if pname in param_docs:
+                pschema["description"] = param_docs[pname]
+
+            properties[pname] = pschema
+
+            if idx < num_req:
+                required.append(pname)
+
+        for arg, default in zip(args.kwonlyargs, args.kw_defaults):
+            pname = arg.arg
+            pschema = ast_annotation_to_schema(arg.annotation)
+            if pname in param_docs:
+                pschema["description"] = param_docs[pname]
+
+            properties[pname] = pschema
+
+            if default is None:
+                required.append(pname)
+
+        return {
+            "name": func_node.name,
+            "type": "object",
+            "properties": properties,
+            "required": required,
+        }

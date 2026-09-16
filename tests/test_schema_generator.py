@@ -1,6 +1,6 @@
 import unittest
 from typing import Dict, List
-from schema_generator import generate_schema
+from schema_generator import ToolSchemaGenerator, generate_schema
 
 
 class TestSchemaGenerator(unittest.TestCase):
@@ -50,6 +50,55 @@ class TestSchemaGenerator(unittest.TestCase):
         schema = generate_schema(sample_function)
         self.assertEqual(schema["properties"]["param1"]["description"], "First parameter description.")
         self.assertEqual(schema["properties"]["param2"]["description"], "Second parameter description.")
+
+    def test_ast_source_parsing(self):
+        """Asserts that ToolSchemaGenerator.generate_from_source(code_string) returns correct schema from raw source."""
+        code_string = """
+def calculate_total(price: float, quantity: int, discount: float = 0.0) -> float:
+    \"\"\"Calculates total price.
+
+    Args:
+        price: Base price of item.
+        quantity: Number of items.
+        discount: Discount percentage.
+    \"\"\"
+    return (price * quantity) * (1 - discount)
+"""
+        schema = ToolSchemaGenerator.generate_from_source(code_string)
+        self.assertEqual(schema["name"], "calculate_total")
+        self.assertEqual(schema["type"], "object")
+        self.assertIn("price", schema["properties"])
+        self.assertEqual(schema["properties"]["price"]["type"], "number")
+        self.assertIn("quantity", schema["properties"])
+        self.assertEqual(schema["properties"]["quantity"]["type"], "integer")
+        self.assertIn("discount", schema["properties"])
+        self.assertEqual(schema["properties"]["discount"]["type"], "number")
+        self.assertIn("price", schema["required"])
+        self.assertIn("quantity", schema["required"])
+        self.assertNotIn("discount", schema["required"])
+        self.assertEqual(schema["properties"]["price"]["description"], "Base price of item.")
+
+    def test_keyword_only_args(self):
+        """Tests a function with keyword-only arguments (after a bare *), asserting that required keyword-only args are in 'required' and defaulted keyword-only args are not."""
+        def sample_function(pos: int, *, kw_req: str, kw_opt: bool = True):
+            pass
+
+        schema = generate_schema(sample_function)
+        self.assertIn("kw_req", schema["required"])
+        self.assertNotIn("kw_opt", schema["required"])
+        self.assertIn("pos", schema["required"])
+
+    def test_union_types(self):
+        """Tests a function with a Python 3.10+ pipe union annotation (e.g. value: int | str), asserting it maps to an 'anyOf' schema."""
+        def sample_function(value: int | str):
+            pass
+
+        schema = generate_schema(sample_function)
+        self.assertIn("anyOf", schema["properties"]["value"])
+        self.assertEqual(
+            schema["properties"]["value"]["anyOf"],
+            [{"type": "integer"}, {"type": "string"}]
+        )
 
 
 if __name__ == "__main__":
